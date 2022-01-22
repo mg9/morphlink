@@ -81,8 +81,8 @@ def get_morph_graphs(max_num_nodes=-1):
 
             graphs.append({'adj':adj_padded,
             'adj_decoded':adj_vectorized, 
-            'features':features,
-            #'features':_features,
+            #'features':features,
+            'features':_features,
             'word':word,
             'g':g})
 

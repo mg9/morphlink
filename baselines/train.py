@@ -46,7 +46,7 @@ def build_model(args):
     elif args.feature_type == 'struct':
         input_dim = 2
 
-    #input_dim = 32
+    input_dim = 32
     model = GraphVAE(input_dim, 64, 256, max_num_nodes)
     return model
 
@@ -60,19 +60,14 @@ def test(args, model, graphs):
         features = data['features'].float()
         adj_input = data['adj'].float()
         features = Variable(features).cuda()
-        #unmasked_adj = adj_input.detach().clone()
+        unmasked_adj = adj_input.detach().clone()
         # clean adj_input for test
-        #num_nodes = len(g.nodes())
-        #_adj_input = torch.tensor(np.identity(num_nodes))
-        #adj_input[:,:num_nodes, :num_nodes] = _adj_input
-        word = data['word']
-        print(word)
-        breakp = False
-        if word =='yaSara':
-            breakpoint()
-            breakp=True
+        num_nodes = len(g.nodes())
+        _adj_input = torch.tensor(np.identity(num_nodes))
+        adj_input[:,:num_nodes, :num_nodes] = _adj_input
         adj_input = Variable(adj_input).cuda()
-        loss, acc, edge_recall, edge_prec, num_edges, num_real_edges, real_edge_recall, real_edge_prec = model(features, adj_input, g, args.logger, adj_input, breakp)
+        
+        loss, acc, edge_recall, edge_prec, num_edges, num_real_edges, real_edge_recall, real_edge_prec = model(features, adj_input, g, args.logger, unmasked_adj)
         epoch_loss += loss.item()
         epoch_recall += edge_recall
         epoch_prec += edge_prec
@@ -80,7 +75,6 @@ def test(args, model, graphs):
         epoch_real_edge_recall += real_edge_recall
         epoch_real_edge_prec += real_edge_prec
 
-    breakpoint()
     epoch_loss = epoch_loss / len(graphs)
     epoch_recall = epoch_recall / len(graphs)
     epoch_prec = epoch_prec / len(graphs)
