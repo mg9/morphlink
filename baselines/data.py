@@ -1,7 +1,7 @@
 import networkx as nx
 import numpy as np
 import torch
-import json, pickle
+import json, pickle, math
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -10,7 +10,7 @@ def get_morph_graphs(max_num_nodes=-1):
     dropped_graphs = 0
     real_sizes =[]
     # read gold morphs
-    with open('data/goldstdsample.tur', 'r') as reader:
+    with open('data/goldstd_mc05-10aggregated.segments.tur', 'r') as reader:
         word_and_morphs = dict()
         for line in reader:
             line = line.split('\t')[1].split(',')[0]
@@ -24,10 +24,10 @@ def get_morph_graphs(max_num_nodes=-1):
                 word_and_morphs[word].append(subword)
                 prev_word = subword
 
-    with open ('data/features', 'rb') as fp:
+    with open ('data/features2', 'rb') as fp:
         vae_features = pickle.load(fp)
 
-    with open('data/probs2.json', 'r') as json_file:
+    with open('data/probs.json', 'r') as json_file:
         logps = json.load(json_file)
         logps = dict(sorted(logps.items())) # fix order
 
@@ -36,32 +36,47 @@ def get_morph_graphs(max_num_nodes=-1):
 
         for (word, _) in logps.items():
             node_features = []
-            g = nx.Graph()
+            g_in = nx.Graph()
+            g_out = nx.DiGraph()
             # do not make graph for no-morphemed words
             if len(word_and_morphs[word]) ==1:
                 continue
             for key in _.keys():
-                g.add_node(key)
-                g.add_edge(key, key)
+                g_out.add_node(key)
+                g_in.add_node(key)
+                g_in.add_edge(key, key)
                 node_features.append(vae_features[key])
 
-            if len(g.nodes()) > max_num_nodes:
+            key_list = [key for key in _.keys()]
+            for i, key in enumerate(key_list):
+                if i<len(key_list)-1:
+                    g_in.add_edge(key_list[i], key_list[i+1])
+
+            if len(g_in.nodes()) > max_num_nodes:
                 dropped_graphs += 1
                 continue
 
             for i in range(len(word_and_morphs[word])-1):
                 src = word_and_morphs[word][i]
                 tgt = word_and_morphs[word][i+1]
-                g.add_edge(src, tgt)
+                g_out.add_edge(src, tgt)
 
-            adj = nx.adjacency_matrix(g).toarray()
-            num_nodes = adj.shape[0]
+
+            adj_in = nx.adjacency_matrix(g_in).toarray()
+            adj_out = nx.adjacency_matrix(g_out).toarray()
+
+            for i in range(len(adj_out)):
+                if 1 not in adj_out[i]:
+                    adj_out[i][i] = 1
+
+            num_nodes = adj_out.shape[0]
             real_sizes.append(num_nodes)
-            adj_padded = np.zeros((max_num_nodes, max_num_nodes))
-            adj_padded[:num_nodes, :num_nodes] = adj
-            adj_decoded = np.zeros(max_num_nodes * (max_num_nodes + 1) // 2)
-            adj_vectorized = adj_padded[np.triu(np.ones((max_num_nodes, max_num_nodes)) ) == 1]
            
+            adj_in_padded = np.zeros((max_num_nodes, max_num_nodes))
+            adj_in_padded[:num_nodes, :num_nodes] = adj_in
+
+            adj_out_padded = np.zeros((max_num_nodes, max_num_nodes))
+            adj_out_padded[:num_nodes, :num_nodes] = adj_out
             
             features = np.identity(max_num_nodes)
             # make features as probabilities
@@ -70,21 +85,16 @@ def get_morph_graphs(max_num_nodes=-1):
                 features[i][i] = np.exp(diags[i])
             features = torch.tensor(np.expand_dims(features, axis=0))
             
-            adj_padded = torch.tensor(np.expand_dims(adj_padded, axis=0))
-            adj_vectorized = torch.tensor(np.expand_dims(adj_vectorized, axis=0))
-           
-            node_features = torch.stack(node_features).squeeze(1)
-            feat_dim = node_features.shape[-1]
-            _features = np.ones((max_num_nodes, feat_dim))
-            _features[:num_nodes,:feat_dim] = node_features.cpu()
-            _features = torch.tensor(_features).unsqueeze(0)
+            adj_in_padded  = torch.tensor(np.expand_dims(adj_in_padded, axis=0))
+            adj_out_padded = torch.tensor(np.expand_dims(adj_out_padded, axis=0))
 
-            graphs.append({'adj':adj_padded,
-            'adj_decoded':adj_vectorized, 
-            #'features':features,
-            'features':_features,
+            graphs.append({
+            'adj_in': adj_in_padded,
+            'adj_out':adj_out_padded,
+            'features':features,
+            #'features':_features,
             'word':word,
-            'g':g})
+            'g':g_out})
 
         print('Number of graphs removed due to upper-limit of number of nodes: ', dropped_graphs)
         print('total graph num: {}'.format(len(graphs)))

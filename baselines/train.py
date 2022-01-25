@@ -45,82 +45,86 @@ def build_model(args):
         input_dim = 1
     elif args.feature_type == 'struct':
         input_dim = 2
-
-    input_dim = 32
-    model = GraphVAE(input_dim, 64, 256, max_num_nodes)
+    #input_dim = 32
+    model = GraphVAE(input_dim, 1024, 1024, max_num_nodes)
     return model
 
 def test(args, model, graphs):
     model.eval()
     epoch_loss = 0; epoch_recall = 0; epoch_prec = 0; 
     epoch_num_real_edges = 0; epoch_real_edge_recall = 0 ; epoch_real_edge_prec = 0
+    epoch_real_edge_correct = 0; epoch_pred_real_edges_num = 0
+
     for batch_idx, data in enumerate(graphs): 
         # data['adj']: (1,maxnode,maxnode), data['adj_decoded']: (1, upper triangle of adj), features: (1,maxnode,maxnode)
         g = data['g']
         features = data['features'].float()
-        adj_input = data['adj'].float()
+        adj_in = data['adj_in'].float()
+        adj_out = data['adj_out'].float()
+
         features = Variable(features).cuda()
-        unmasked_adj = adj_input.detach().clone()
-        # clean adj_input for test
-        num_nodes = len(g.nodes())
-        _adj_input = torch.tensor(np.identity(num_nodes))
-        adj_input[:,:num_nodes, :num_nodes] = _adj_input
-        adj_input = Variable(adj_input).cuda()
-        
-        loss, acc, edge_recall, edge_prec, num_edges, num_real_edges, real_edge_recall, real_edge_prec = model(features, adj_input, g, args.logger, unmasked_adj)
+        adj_in = Variable(adj_in).cuda()
+        adj_out = Variable(adj_out).cuda()
+
+        loss, acc, gold_real_edges_num, real_edge_correct, pred_real_edges_num = model(features, adj_in, g, args.logger, adj_out)
         epoch_loss += loss.item()
-        epoch_recall += edge_recall
-        epoch_prec += edge_prec
-        epoch_num_real_edges += num_real_edges
-        epoch_real_edge_recall += real_edge_recall
-        epoch_real_edge_prec += real_edge_prec
+        epoch_num_real_edges += gold_real_edges_num
+        epoch_real_edge_correct += real_edge_correct
+        epoch_pred_real_edges_num += pred_real_edges_num
+    
 
     epoch_loss = epoch_loss / len(graphs)
-    epoch_recall = epoch_recall / len(graphs)
-    epoch_prec = epoch_prec / len(graphs)
-    epoch_real_edge_recall = epoch_real_edge_recall / len(graphs)
-    epoch_real_edge_prec = epoch_real_edge_prec / len(graphs)
+    epoch_real_edge_recall  = epoch_real_edge_correct   / epoch_num_real_edges
+    epoch_real_edge_prec    = epoch_real_edge_correct   / epoch_pred_real_edges_num
     print('VAL Loss: %.4f, epoch_num_real_edges: %d, epoch_real_edge_recall: %.4f, epoch_real_edge_prec: %.4f' % (epoch_loss, epoch_num_real_edges, epoch_real_edge_recall, epoch_real_edge_prec))
 
 
 def train(args, model, graphs):
     graphs_train, graphs_test = graphs
     optimizer = optim.Adam(list(model.parameters()), lr=args.lr)
-    scheduler = MultiStepLR(optimizer, milestones=LR_milestones, gamma=args.lr)
+    scheduler = MultiStepLR(optimizer, milestones=LR_milestones, gamma=0.9, verbose=True)
 
     for epoch in range(args.epochs):
         epoch_loss = 0; epoch_recall = 0; epoch_prec = 0
-        epoch_num_real_edges = 0; epoch_real_edge_recall = 0 ; epoch_real_edge_prec = 0
+        epoch_num_real_edges = 0; epoch_real_edge_recall = 0; epoch_real_edge_prec = 0
+        epoch_real_edge_correct = 0; epoch_pred_real_edges_num = 0
         args.logger.write('\n')
 
+        batch_loss = torch.tensor(0.).cuda()
         for batch_idx, data in enumerate(graphs_train): 
             # data['adj']: (1,maxnode,maxnode), data['adj_decoded']: (1, upper triangle of adj), features: (1,maxnode,maxnode)
             model.zero_grad()
             g = data['g']
             features = data['features'].float()
-            adj_input = data['adj'].float()
-            features = Variable(features).cuda()
-            adj_input = Variable(adj_input).cuda()
-            loss, acc, edge_recall, edge_prec, num_edges, num_real_edges, real_edge_recall, real_edge_prec = model(features, adj_input, g, args.logger)
-            loss.backward()
-            epoch_loss += loss.item()
-            epoch_recall += edge_recall
-            epoch_prec += edge_prec
-            epoch_num_real_edges += num_real_edges
-            epoch_real_edge_recall += real_edge_recall
-            epoch_real_edge_prec += real_edge_prec
-            optimizer.step()
-            #scheduler.step()
-        epoch_loss      = epoch_loss    / len(graphs_train)
-        epoch_recall    = epoch_recall  / len(graphs_train)
-        epoch_prec      = epoch_prec    / len(graphs_train)
-        epoch_real_edge_recall  = epoch_real_edge_recall / len(graphs_train)
-        epoch_real_edge_prec    = epoch_real_edge_prec   / len(graphs_train)
+            adj_in = data['adj_in'].float()
+            adj_out = data['adj_out'].float()
 
-        print('\nEpoch: %d, Loss: %.7f, epoch_num_real_edges: %d, epoch_real_edge_recall: %.4f, epoch_real_edge_prec: %.4f' % (epoch, epoch_loss, epoch_num_real_edges, epoch_real_edge_recall, epoch_real_edge_prec))
+            features = Variable(features).cuda()
+            adj_in = Variable(adj_in).cuda()
+            adj_out = Variable(adj_out).cuda()
+
+            loss, acc, gold_real_edges_num, real_edge_correct, pred_real_edges_num = model(features, adj_in, g, args.logger, adj_out)
+            #print('batch idx: %d, loss: %.3f, num_real_edges: %d, real_edge_recall: %.3f, real_edge_prec: %.3f:' % (loss, acc, num_real_edges, real_edge_recall, real_edge_prec))
+            epoch_loss += loss.item()
+            batch_loss += loss
+            epoch_num_real_edges += gold_real_edges_num
+            epoch_real_edge_correct += real_edge_correct
+            epoch_pred_real_edges_num += pred_real_edges_num
+
+            if batch_idx!=0 and batch_idx % 32 ==0:
+                #print('Batch idx %d, batch_loss: %.3f,  updated grads.' % (batch_idx, batch_loss))
+                batch_loss = batch_loss#/32
+                batch_loss.backward()
+                optimizer.step()
+                #scheduler.step()
+                batch_loss = torch.tensor(0.).cuda()
+
+        epoch_loss = epoch_loss    / len(graphs_train)
+        epoch_real_edge_recall  = epoch_real_edge_correct   / epoch_num_real_edges
+        epoch_real_edge_prec    = epoch_real_edge_correct   / epoch_pred_real_edges_num
+        print('\nEpoch: %d, Loss: %.4f, epoch_num_real_edges: %d, epoch_real_edge_recall: %.4f, epoch_real_edge_prec: %.4f' % (epoch, epoch_loss, epoch_num_real_edges, epoch_real_edge_recall, epoch_real_edge_prec))
         args.logger.write('\n Epoch %d, VAL ' %(epoch))
         test(args, model, graphs_test)
-        
         model.train()
 
 def arg_parse():
@@ -153,7 +157,7 @@ def main():
     prog_args = arg_parse()
     prog_args.logger = Logger('train.log')
     os.environ['CUDA_VISIBLE_DEVICES'] = str(CUDA)
-    prog_args.max_num_nodes = 10
+    prog_args.max_num_nodes = 15
     prog_args.epochs = 1000
     model = build_model(prog_args).cuda()
     print(model)
